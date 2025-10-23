@@ -95,12 +95,15 @@ class SegmentationLayer(nn.Module):
         self.conv = nn.Conv3d(in_channels, out_channels, 1)
 
     def forward(self, x, prev_seg=None, upscale=False, add=False):
-        x = self.conv(x)
+        seg = self.conv(x)
         if add and prev_seg is not None:
-            x = x + prev_seg
+            # Upsample previous segmentation first, then add
+            prev_up = F.interpolate(prev_seg, size=seg.shape[2:], mode='trilinear', align_corners=False)
+            seg = seg + prev_up
         if upscale:
-            x = F.interpolate(x, scale_factor=2, mode='trilinear', align_corners=False)
-        return x
+            seg = F.interpolate(seg, scale_factor=2, mode='trilinear', align_corners=False)
+        return seg
+
 
 # -----------------------------------
 #  Full Model
