@@ -28,3 +28,19 @@ LR = 1e-4
 VAL_SPLIT = 0.1
 TEST_SPLIT = 0.1
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# -------------------------------
+# Dice Coefficient
+# -------------------------------
+def dice_coefficient(pred, target, num_classes=6, epsilon=1e-5):
+    """Multi-class Dice Similarity Coefficient"""
+    pred = torch.argmax(pred, dim=1)  # [B, D, H, W]
+    dice_scores = []
+    for cls in range(num_classes):
+        pred_cls = (pred == cls).float()
+        target_cls = (target == cls).float()
+        intersection = torch.sum(pred_cls * target_cls)
+        union = torch.sum(pred_cls) + torch.sum(target_cls)
+        dice = (2 * intersection + epsilon) / (union + epsilon)
+        dice_scores.append(dice.item())
+    return dice_scores
