@@ -70,3 +70,6 @@ class LocalizationBlock(nn.Module):
         x = self.conv2(x)
         x = self.relu2(x)
         return x
+    
+
+
