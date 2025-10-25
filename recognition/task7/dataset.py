@@ -35,7 +35,7 @@ def discover_pairs(image_dir, label_dir, pattern="*.nii*"):
     lbls_out = [lbl_dict[k] for k in common]
 
     assert len(imgs_out) == len(lbls_out) and len(imgs_out) > 0, "Image/label count mismatch"
-    print(f"✅ Found {len(imgs_out)} matching pairs between '{image_dir}' and '{label_dir}'.")
+    print(f"Found {len(imgs_out)} matching pairs between '{image_dir}' and '{label_dir}'.")
     return imgs_out, lbls_out
 
 
