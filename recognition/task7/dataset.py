@@ -35,7 +35,7 @@ def discover_pairs(image_dir, label_dir, pattern="*.nii*"):
     lbls_out = [lbl_dict[k] for k in common]
 
     assert len(imgs_out) == len(lbls_out) and len(imgs_out) > 0, "Image/label count mismatch"
-    print(f"Found {len(imgs_out)} matching pairs between '{image_dir}' and '{label_dir}'.")
+    print(f"✅ Found {len(imgs_out)} matching pairs between '{image_dir}' and '{label_dir}'.")
     return imgs_out, lbls_out
 
 
@@ -61,9 +61,11 @@ def pad_or_crop(volume, target_shape=(128, 128, 96)):
 # ---------------------------------------------------------------------
 class Prostate3DDataset(Dataset):
     """
+    Loads MRI/label NIfTI volumes, normalizes, downsamples,
+    and pads/crops to make dimensions consistent (for UNet training).
     Returns:
-      image: torch.FloatTensor [1, D, H, W]  (z-score normalized, downsampled)
-      label: torch.LongTensor  [D, H, W]     (integer class ids)
+      image: torch.FloatTensor [1, D, H, W]
+      label: torch.LongTensor  [D, H, W]
     """
     def __init__(self, image_paths, label_paths,
                  downsample=(0.5, 0.5, 0.5), augment=False):
@@ -74,34 +76,56 @@ class Prostate3DDataset(Dataset):
 
         if augment and tio is not None:
             self.tx = tio.Compose([
-                tio.RandomFlip(axes=(0,1,2), flip_probability=0.5),
-                tio.RandomAffine(scales=(0.9,1.1), degrees=10),
+                tio.RandomFlip(axes=(0, 1, 2), flip_probability=0.5),
+                tio.RandomAffine(scales=(0.9, 1.1), degrees=10),
                 tio.RandomElasticDeformation(num_control_points=5, max_displacement=5),
             ])
         else:
             self.tx = None
 
-    def __len__(self): return len(self.image_paths)
+    def __len__(self):
+        return len(self.image_paths)
 
     def __getitem__(self, i):
-        img = nib.load(self.image_paths[i]).get_fdata().astype(np.float32)   # (D,H,W)
-        lbl = nib.load(self.label_paths[i]).get_fdata().astype(np.uint8)     # (D,H,W)
+        # --- Load data ---
+        img = nib.load(self.image_paths[i]).get_fdata().astype(np.float32)
+        lbl = nib.load(self.label_paths[i]).get_fdata().astype(np.uint8)
 
-        # z-score normalization
+        # --- Normalize MRI image ---
         img = (img - img.mean()) / (img.std() + 1e-8)
 
-        img_t = torch.from_numpy(img)[None,None]  # (1,1,D,H,W)
-        lbl_t = torch.from_numpy(lbl)[None,None].float()
+        # --- Pad or crop to consistent shape before tensor conversion ---
+        img = pad_or_crop(img)
+        lbl = pad_or_crop(lbl)
 
-        # downsample (trilinear for image, nearest for label)
+        # --- Convert to torch tensors ---
+        img_t = torch.from_numpy(img)[None, None]  # (1,1,D,H,W)
+        lbl_t = torch.from_numpy(lbl)[None, None].float()
+
+        # --- Downsample ---
         img_t = F.interpolate(img_t, scale_factor=self.downsample,
                               mode='trilinear', align_corners=False)
         lbl_t = F.interpolate(lbl_t, scale_factor=self.downsample,
                               mode='nearest')
 
-        img_t = img_t.squeeze(0)           # (1,D,H,W)
-        lbl_t = lbl_t.squeeze(0).long()    # (D,H,W)
+        # --- Pad to make D, H, W divisible by 16 ---
+        _, _, D, H, W = img_t.shape
+        pad_d = (16 - D % 16) % 16
+        pad_h = (16 - H % 16) % 16
+        pad_w = (16 - W % 16) % 16
 
+        pad = (pad_w // 2, pad_w - pad_w // 2,
+               pad_h // 2, pad_h - pad_h // 2,
+               pad_d // 2, pad_d - pad_d // 2)
+
+        img_t = F.pad(img_t, pad)
+        lbl_t = F.pad(lbl_t, pad)
+
+        # --- Remove batch dimension ---
+        img_t = img_t.squeeze(0)        # (1, D, H, W)
+        lbl_t = lbl_t.squeeze(0).long() # (D, H, W)
+
+        # --- Optional TorchIO augmentation ---
         if self.tx is not None:
             subject = tio.Subject(
                 image=tio.ScalarImage(tensor=img_t),
