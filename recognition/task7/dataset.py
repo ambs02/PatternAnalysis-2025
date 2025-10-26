@@ -40,6 +40,23 @@ def discover_pairs(image_dir, label_dir, pattern="*.nii*"):
 
 
 # ---------------------------------------------------------------------
+# Helper to pad or crop all 3D volumes to a fixed size
+# ---------------------------------------------------------------------
+def pad_or_crop(volume, target_shape=(128, 128, 96)):
+    """Pad or crop a 3D numpy volume to the target shape"""
+    z, y, x = volume.shape
+    tz, ty, tx = target_shape
+
+    # crop or pad
+    out = np.zeros(target_shape, dtype=volume.dtype)
+    z_min = min(z, tz)
+    y_min = min(y, ty)
+    x_min = min(x, tx)
+    out[:z_min, :y_min, :x_min] = volume[:z_min, :y_min, :x_min]
+    return out
+
+
+# ---------------------------------------------------------------------
 # 3D PROSTATE / HIP MRI DATASET
 # ---------------------------------------------------------------------
 class Prostate3DDataset(Dataset):
