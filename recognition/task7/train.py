@@ -1,466 +1,379 @@
 """
-PyTorch training script for the 3D Improved UNet (Isensee et al. 2018).
-Enhanced with DiceCELoss and scheduler to improve Dice coefficients.
+This script executes the training, validating, testing and saving process of the 3D Improved UNet Model. Additionally,
+accuracy, loss, multiclass dice coefficient and dice similarity coefficient plots are created and saved to visualise
+the performance of the model.
 """
 
 import os
 import time
 import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
-import matplotlib.pyplot as plt
 
 from modules import ImprovedUNet3D
 from dataset import Prostate3DDataset, discover_pairs
 
 # -------------------------------
-# Config
+# Paths / Hyperparameters (kept the same style as your earlier code)
 # -------------------------------
+# On Rangpur we keep separate image/label roots (equivalent to DATA_PATH in TF)
 DATA_ROOT_IMAGES = "/home/groups/comp3710/HipMRI_Study_open/semantic_MRs"
 DATA_ROOT_LABELS = "/home/groups/comp3710/HipMRI_Study_open/semantic_labels_only"
 
-SAVE_PATH = "./results/"
-os.makedirs(SAVE_PATH, exist_ok=True)
+SAVED_RESULTS_PATH = "./results/"   # mirrors SAVED_RESULTS_PATH usage
+os.makedirs(SAVED_RESULTS_PATH, exist_ok=True)
 
+# Match your previous setup
+BATCH_LENGTH = 2           # == batch size
+BUFFER_SIZE = 64           # (not used by PyTorch DataLoader shuffle buffer, kept for parity)
 EPOCHS = 10
-BATCH_SIZE = 2
-LR = 1e-4
 VAL_SPLIT = 0.1
 TEST_SPLIT = 0.1
+
+# Training specifics from your earlier PyTorch
+LR = 1e-4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 NUM_CLASSES = 6
+CLASS_NAMES = ["Background", "Body", "Bone", "Bladder", "Rectum", "Prostate"]
+
+torch.backends.cudnn.benchmark = True  # speed on fixed shapes
 
 
 # -------------------------------
-# Hybrid Dice + CrossEntropy Loss
+# Loss: Hybrid Dice + Cross Entropy (helps improve per-class Dice)
 # -------------------------------
 class DiceCELoss(nn.Module):
-    def __init__(self, weight_ce=0.5, smooth=1e-5):
+    def __init__(self, ce_weight=0.5, smooth=1e-5,
+                 label_smooth=0.02,
+                 ce_class_weights=None,
+                 dice_class_weights=None):
         super().__init__()
-        self.weight_ce = weight_ce
-        self.ce = nn.CrossEntropyLoss()
+        self.ce_weight = ce_weight
         self.smooth = smooth
+        self.label_smooth = label_smooth
+        self.ce = nn.CrossEntropyLoss(weight=ce_class_weights)
+        self.dice_class_weights = dice_class_weights
 
     def forward(self, preds, target):
         ce_loss = self.ce(preds, target)
-        preds_soft = torch.softmax(preds, dim=1)
-        target_onehot = torch.zeros_like(preds_soft).scatter_(1, target.unsqueeze(1), 1)
-        intersection = torch.sum(preds_soft * target_onehot, dim=(2, 3, 4))
-        union = torch.sum(preds_soft + target_onehot, dim=(2, 3, 4))
-        dice_loss = 1 - (2. * intersection + self.smooth) / (union + self.smooth)
-        dice_loss = dice_loss.mean()
-        return self.weight_ce * ce_loss + (1 - self.weight_ce) * dice_loss
+        probs = torch.softmax(preds, dim=1)
+        target_oh = torch.zeros_like(probs).scatter_(1, target.unsqueeze(1), 1)
 
+        if self.label_smooth > 0:
+            C = probs.shape[1]
+            target_oh = (1 - self.label_smooth) * target_oh + self.label_smooth / C
 
-# -------------------------------
-# Dice Coefficient
-# -------------------------------
-def dice_coefficient(pred, target, num_classes=NUM_CLASSES, epsilon=1e-5):
-    pred = torch.argmax(pred, dim=1)
-    dice_scores = []
-    for cls in range(num_classes):
-        pred_cls = (pred == cls).float()
-        target_cls = (target == cls).float()
-        intersection = torch.sum(pred_cls * target_cls)
-        union = torch.sum(pred_cls) + torch.sum(target_cls)
-        dice = (2 * intersection + epsilon) / (union + epsilon)
-        dice_scores.append(dice.item())
-    return dice_scores
+        dims = (2, 3, 4)
+        intersection = torch.sum(probs * target_oh, dim=dims)
+        union = torch.sum(probs + target_oh, dim=dims)
+        dice_per_c = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss_c = 1.0 - dice_per_c
+
+        if self.dice_class_weights is not None:
+            dice_loss = (dice_loss_c * self.dice_class_weights.unsqueeze(0)).mean()
+        else:
+            dice_loss = dice_loss_c.mean()
+
+        return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
+
 
 
 # -------------------------------
-# Helper
+# Metrics (match TF structure/names, but in PyTorch)
+# -------------------------------
+def _to_one_hot(pred_logits: torch.Tensor, num_classes: int) -> torch.Tensor:
+    """Logits [B,C,D,H,W] -> one-hot [B,C,D,H,W] via argmax."""
+    pred = torch.argmax(pred_logits, dim=1)                      # [B,D,H,W]
+    pred_oh = torch.nn.functional.one_hot(pred, num_classes)     # [B,D,H,W,C]
+    return pred_oh.permute(0, 4, 1, 2, 3).float()
+
+
+def _multiclass_dice_from_oh(y_true_oh: torch.Tensor, y_pred_oh: torch.Tensor, eps=1e-5) -> float:
+    """
+    Multiclass dice coefficient as defined in TF reference:
+    mdsc = (2/6) * sum_c ( (|Y∩P| + eps) / (|Y| + |P| + eps) )
+    """
+    # Reduce over batch and spatial dims
+    dims = (0, 2, 3, 4)
+    inter = torch.sum(y_true_oh * y_pred_oh, dim=dims)           # [C]
+    y_sum = torch.sum(y_true_oh, dim=dims)                       # [C]
+    p_sum = torch.sum(y_pred_oh, dim=dims)                       # [C]
+    per_class = (inter + eps) / (y_sum + p_sum + eps)            # [C]
+    mdsc = (2.0 / y_true_oh.shape[1]) * torch.sum(per_class)     # scalar
+    return mdsc.item()
+
+
+def dice_per_class_from_oh(y_true_oh: torch.Tensor, y_pred_oh: torch.Tensor, eps=1e-5) -> np.ndarray:
+    """Return per-class Dice (C,) using 2*|∩|/(|Y|+|P|) over batch+spatial dims."""
+    dims = (0, 2, 3, 4)
+    inter = torch.sum(y_true_oh * y_pred_oh, dim=dims)           # [C]
+    y_sum = torch.sum(y_true_oh, dim=dims)                       # [C]
+    p_sum = torch.sum(y_pred_oh, dim=dims)                       # [C]
+    dsc = (2.0 * inter + eps) / (y_sum + p_sum + eps)            # [C]
+    return dsc.detach().cpu().numpy()
+
+
+def multiclass_dice_coefficient(y_true_oh: torch.Tensor, y_pred_logits: torch.Tensor) -> float:
+    """TF-style function signature name, but in PyTorch."""
+    y_pred_oh = _to_one_hot(y_pred_logits, NUM_CLASSES)
+    return _multiclass_dice_from_oh(y_true_oh, y_pred_oh)
+
+
+def dice_coefficient(y_true_oh: torch.Tensor, y_pred_logits: torch.Tensor, class_number: int) -> float:
+    """Per-class Dice (matches TF helper style)."""
+    y_pred_oh = _to_one_hot(y_pred_logits, NUM_CLASSES)
+    dsc = dice_per_class_from_oh(y_true_oh, y_pred_oh)
+    return float(dsc[class_number])
+
+
+def background_dsc(y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 0)
+def body_dsc      (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 1)
+def bone_dsc      (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 2)
+def bladder_dsc   (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 3)
+def rectum_dsc    (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 4)
+def prostate_dsc  (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 5)
+
+
+# -------------------------------
+# Epoch loops (train/validate/test)
 # -------------------------------
 def _prepare_targets(lbls: torch.Tensor) -> torch.Tensor:
+    # Dataset returns [1, D, H, W] labels; squeeze channel for CE
     if lbls.ndim == 5 and lbls.shape[1] == 1:
         lbls = lbls.squeeze(1)
     return lbls.long()
 
+def run_epoch(model, loader, optimizer, criterion, training: bool):
+    if training:
+        model.train()
+    else:
+        model.eval()
+
+    total_loss = 0.0
+    total_correct = 0
+    total_voxels = 0
+
+    # For TF-style metric tracking
+    mc_dice_vals = []
+    per_class_dice_collect = []
+
+    with torch.enable_grad() if training else torch.no_grad():
+        for imgs, lbls in loader:
+            imgs = imgs.to(DEVICE)               # [B,1,D,H,W]
+            lbls = _prepare_targets(lbls).to(DEVICE)  # [B,D,H,W]
+
+            logits = model(imgs)                 # [B,C,D,H,W]
+            loss = criterion(logits, lbls)
+
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.item()
+
+            # Accuracy (per-voxel)
+            pred = torch.argmax(logits, dim=1)   # [B,D,H,W]
+            total_correct += (pred == lbls).sum().item()
+            total_voxels += lbls.numel()
+
+            # One-hot GT for dice metrics
+            gt_oh = torch.nn.functional.one_hot(lbls, NUM_CLASSES).permute(0, 4, 1, 2, 3).float()
+
+            # Multiclass dice
+            mc_dice_vals.append(multiclass_dice_coefficient(gt_oh, logits))
+
+            # Per-class dice
+            per_class_dice_collect.append(dice_per_class_from_oh(gt_oh, _to_one_hot(logits, NUM_CLASSES)))
+
+    mean_loss = total_loss / max(1, len(loader))
+    acc = total_correct / max(1, total_voxels)
+    mean_mc_dice = float(np.mean(mc_dice_vals)) if mc_dice_vals else 0.0
+    mean_per_class_dice = np.mean(np.stack(per_class_dice_collect, axis=0), axis=0) if per_class_dice_collect else np.zeros(NUM_CLASSES)
+
+    return mean_loss, acc, mean_mc_dice, mean_per_class_dice
+
 
 # -------------------------------
-# Training and Validation
+# Train the model (TF-style flow)
 # -------------------------------
-def train_one_epoch(model, loader, optimizer, criterion):
-    model.train()
-    total_loss, correct, total_voxels = 0.0, 0, 0
-    dice_scores_all = []
+def train_model():
+    """
+    Train the model and calculate training, validation and test results.
+    Mirrors the structure of the original TensorFlow script, using PyTorch.
+    """
 
-    for imgs, lbls in loader:
-        imgs, lbls = imgs.to(DEVICE), _prepare_targets(lbls).to(DEVICE)
-        optimizer.zero_grad()
-        preds = model(imgs)
-        loss = criterion(preds, lbls)
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        preds_argmax = torch.argmax(preds, dim=1)
-        correct += (preds_argmax == lbls).sum().item()
-        total_voxels += lbls.numel()
-        dice_scores_all.append(dice_coefficient(preds, lbls))
-
-    train_acc = correct / total_voxels
-    mean_dice_per_class = np.array(dice_scores_all).mean(axis=0)
-    return total_loss / len(loader), train_acc, mean_dice_per_class
-
-
-@torch.no_grad()
-def validate(model, loader, criterion):
-    model.eval()
-    total_loss, correct, total_voxels = 0.0, 0, 0
-    dice_scores_all = []
-
-    for imgs, lbls in loader:
-        imgs, lbls = imgs.to(DEVICE), _prepare_targets(lbls).to(DEVICE)
-        preds = model(imgs)
-        loss = criterion(preds, lbls)
-        total_loss += loss.item()
-        preds_argmax = torch.argmax(preds, dim=1)
-        correct += (preds_argmax == lbls).sum().item()
-        total_voxels += lbls.numel()
-        dice_scores_all.append(dice_coefficient(preds, lbls))
-
-    val_acc = correct / total_voxels
-    mean_dice_per_class = np.array(dice_scores_all).mean(axis=0)
-    return total_loss / len(loader), val_acc, mean_dice_per_class
-
-
-# -------------------------------
-# Main
-# -------------------------------
-def main():
-    print("🚀 Starting 3D Improved UNet training...")
-
+    # ----- Data discovery -----
     imgs, lbls = discover_pairs(DATA_ROOT_IMAGES, DATA_ROOT_LABELS)
-    print(f"✅ Found {len(imgs)} image/label pairs")
 
-    dataset = Prostate3DDataset(imgs, lbls, downsample=(0.5, 0.5, 0.5), augment=True)
-    n_total = len(dataset)
+    # ----- Dataset split -----
+    full_ds = Prostate3DDataset(imgs, lbls, downsample=(0.5, 0.5, 0.5), augment=True)
+    n_total = len(full_ds)
     n_test = int(TEST_SPLIT * n_total)
     n_val = int(VAL_SPLIT * n_total)
     n_train = n_total - n_test - n_val
-    train_ds, val_ds, test_ds = random_split(dataset, [n_train, n_val, n_test])
 
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=1)
-    test_loader = DataLoader(test_ds, batch_size=1)
+    train_ds, val_ds, test_ds = random_split(full_ds, [n_train, n_val, n_test])
 
-    print(f"Dataset split: Train={n_train}, Val={n_val}, Test={n_test}")
+    train_loader = DataLoader(train_ds, batch_size=BATCH_LENGTH, shuffle=True, num_workers=1, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=BATCH_LENGTH, shuffle=False, num_workers=1, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=BATCH_LENGTH, shuffle=False, num_workers=1, pin_memory=True)
 
+    # ----- Build model -----
     model = ImprovedUNet3D(num_classes=NUM_CLASSES).to(DEVICE)
-    criterion = DiceCELoss(weight_ce=0.5)
+    print(model)
+
+    # Loss / Optimizer
+    # You can optionally use class weights to help underrepresented classes:
+    # class_weights = torch.tensor([0.2, 0.5, 1.0, 1.2, 1.4, 1.4], device=DEVICE)
+    class_weights = None
+    # criterion = DiceCELoss(ce_weight=0.5, smooth=1e-5, label_smooth=0.0, class_weights=class_weights)
+    # Define class weights for CE and Dice parts
+    ce_class_weights   = torch.tensor([0.05, 0.20, 0.60, 1.20, 1.60, 1.80], device=DEVICE)
+    dice_class_weights = torch.tensor([0.05, 0.20, 0.60, 1.20, 1.60, 1.80], device=DEVICE)
+
+    # Hybrid loss
+    criterion = DiceCELoss(
+        ce_weight=0.5,
+        smooth=1e-5,
+        label_smooth=0.0,
+        ce_class_weights=ce_class_weights,
+        dice_class_weights=dice_class_weights
+    )
+
     optimizer = optim.Adam(model.parameters(), lr=LR)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=2)
 
-    train_losses, val_losses, train_accs, val_accs = [], [], [], []
-    train_dice_hist, val_dice_hist, mean_dice_val = [], [], []
+    # ----- Training -----
+    history = {
+        "accuracy": [], "val_accuracy": [],
+        "loss": [], "val_loss": [],
+        "multiclass_dice_coefficient": [], "val_multiclass_dice_coefficient": [],
+        "background_dsc": [], "body_dsc": [], "bone_dsc": [], "bladder_dsc": [], "rectum_dsc": [], "prostate_dsc": [],
+        "val_background_dsc": [], "val_body_dsc": [], "val_bone_dsc": [], "val_bladder_dsc": [], "val_rectum_dsc": [], "val_prostate_dsc": [],
+    }
 
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(EPOCHS):
         t0 = time.time()
-        train_loss, train_acc, train_dice = train_one_epoch(model, train_loader, optimizer, criterion)
-        val_loss, val_acc, val_dice = validate(model, val_loader, criterion)
-        scheduler.step(val_dice.mean())
+
+        # Train epoch
+        tr_loss, tr_acc, tr_mdsc, tr_per_class = run_epoch(model, train_loader, optimizer, criterion, training=True)
+        # Val epoch
+        va_loss, va_acc, va_mdsc, va_per_class = run_epoch(model, val_loader, optimizer, criterion, training=False)
+
         t1 = time.time()
+        print(f"Epoch {epoch+1}/{EPOCHS} | "
+              f"Train Loss {tr_loss:.4f} Acc {tr_acc:.3f} MC-Dice {tr_mdsc:.3f} | "
+              f"Val Loss {va_loss:.4f} Acc {va_acc:.3f} MC-Dice {va_mdsc:.3f} | "
+              f"Time {(t1 - t0):.1f}s")
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        train_accs.append(train_acc)
-        val_accs.append(val_acc)
-        train_dice_hist.append(train_dice)
-        val_dice_hist.append(val_dice)
-        mean_dice_val.append(val_dice.mean())
+        # Log like Keras .history
+        history["loss"].append(tr_loss)
+        history["val_loss"].append(va_loss)
+        history["accuracy"].append(tr_acc)
+        history["val_accuracy"].append(va_acc)
+        history["multiclass_dice_coefficient"].append(tr_mdsc)
+        history["val_multiclass_dice_coefficient"].append(va_mdsc)
 
-        print(f"Epoch {epoch}/{EPOCHS} | "
-              f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
-              f"Train Acc: {train_acc:.3f} | Val Acc: {val_acc:.3f} | "
-              f"Mean Dice: {val_dice.mean():.3f} | Time: {(t1 - t0):.1f}s")
+        # Per-class (train)
+        history["background_dsc"].append(tr_per_class[0])
+        history["body_dsc"].append(tr_per_class[1])
+        history["bone_dsc"].append(tr_per_class[2])
+        history["bladder_dsc"].append(tr_per_class[3])
+        history["rectum_dsc"].append(tr_per_class[4])
+        history["prostate_dsc"].append(tr_per_class[5])
 
-    torch.save(model.state_dict(), os.path.join(SAVE_PATH, "improved_3d_unet_dice.pth"))
+        # Per-class (val)
+        history["val_background_dsc"].append(va_per_class[0])
+        history["val_body_dsc"].append(va_per_class[1])
+        history["val_bone_dsc"].append(va_per_class[2])
+        history["val_bladder_dsc"].append(va_per_class[3])
+        history["val_rectum_dsc"].append(va_per_class[4])
+        history["val_prostate_dsc"].append(va_per_class[5])
 
-    epochs = np.arange(1, EPOCHS + 1)
-    train_dice_hist = np.array(train_dice_hist)
-    val_dice_hist = np.array(val_dice_hist)
+    # ----- Testing -----
+    te_loss, te_acc, te_mdsc, te_per_class = run_epoch(model, test_loader, optimizer, criterion, training=False)
+    print("\nTest metrics:")
+    print(f"  Loss: {te_loss:.4f} | Accuracy: {te_acc:.4f} | Multiclass Dice: {te_mdsc:.4f}")
+    print("  Per-class Dice:")
+    for name, v in zip(CLASS_NAMES, te_per_class):
+        print(f"    {name}: {v:.4f}")
 
-    # -------------------------------
-    # 1️⃣ Accuracy vs Epoch
-    # -------------------------------
+    # ----- Save model -----
+    torch.save(model.state_dict(), os.path.join(SAVED_RESULTS_PATH, "improved_3d_unet_model.pth"))
+    print(f"\n✅ Model saved to {os.path.join(SAVED_RESULTS_PATH, 'improved_3d_unet_model.pth')}")
+
+    # ----- Plots (match TF 'show' + 'save' style) -----
+    epochs = range(EPOCHS)
+
+    # Accuracy
     plt.figure()
-    plt.plot(epochs, train_accs, label="Train Accuracy")
-    plt.plot(epochs, val_accs, label="Validation Accuracy")
+    plt.plot(epochs, history["accuracy"], label="Training Accuracy")
+    plt.plot(epochs, history["val_accuracy"], label="Validation Accuracy")
+    plt.legend(loc="upper left")
+    plt.title("Accuracy")
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy")
-    plt.title("Accuracy vs Epoch")
-    plt.legend()
-    plt.savefig(os.path.join(SAVE_PATH, "Accuracy.png"))
-    plt.close()
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3Accuracy.png"))
+    plt.show()
 
-    # -------------------------------
-    # 2️⃣ Loss vs Epoch
-    # -------------------------------
+    # Loss
     plt.figure()
-    plt.plot(epochs, train_losses, label="Train Loss")
-    plt.plot(epochs, val_losses, label="Validation Loss")
+    plt.plot(epochs, history["loss"], label="Training Loss")
+    plt.plot(epochs, history["val_loss"], label="Validation Loss")
+    plt.legend(loc="upper left")
+    plt.title("Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.title("Loss vs Epoch")
-    plt.legend()
-    plt.savefig(os.path.join(SAVE_PATH, "Loss.png"))
-    plt.close()
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3Loss.png"))
+    plt.show()
 
-    # -------------------------------
-    # 3️⃣ Multiclass Mean Dice vs Epoch
-    # -------------------------------
+    # Multiclass Dice Coefficient
     plt.figure()
-    plt.plot(epochs, mean_dice_val, label="Mean Dice (Validation)")
+    plt.plot(epochs, history["multiclass_dice_coefficient"], label="Training Multiclass Dice Coefficient")
+    plt.plot(epochs, history["val_multiclass_dice_coefficient"], label="Validation Multiclass Dice Coefficient")
+    plt.legend(loc="upper left")
+    plt.title("Multiclass Dice Coefficient")
     plt.xlabel("Epoch")
-    plt.ylabel("Dice Coefficient")
-    plt.title("Mean Dice Coefficient vs Epoch")
-    plt.legend()
-    plt.savefig(os.path.join(SAVE_PATH, "MeanDice.png"))
-    plt.close()
+    plt.ylabel("Multiclass Dice Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3MulticlassDice.png"))
+    plt.show()
 
-    # -------------------------------
-    # 4️⃣ Training Dice per Class
-    # -------------------------------
+    # Training Dice per class
     plt.figure()
-    for c in range(NUM_CLASSES):
-        plt.plot(epochs, train_dice_hist[:, c], label=f"Class {c}")
-
-    # class_names = ["Background", "Body", "Bone", "Bladder", "Rectum", "Prostate"]
-    # for c, name in enumerate(class_names):
-    #     plt.plot(epochs, train_dice_hist[:, c], label=f"{name} DSC")
-
+    plt.plot(epochs, history["background_dsc"], label="Background DSC")
+    plt.plot(epochs, history["body_dsc"], label="Body DSC")
+    plt.plot(epochs, history["bone_dsc"], label="Bone DSC")
+    plt.plot(epochs, history["bladder_dsc"], label="Bladder DSC")
+    plt.plot(epochs, history["rectum_dsc"], label="Rectum DSC")
+    plt.plot(epochs, history["prostate_dsc"], label="Prostate DSC")
+    plt.legend(loc="upper left")
+    plt.title("Training Dice Similarity Coefficients For Each Class")
     plt.xlabel("Epoch")
-    plt.ylabel("Dice Coefficient")
-    plt.title("Training Dice Similarity Coefficient per Class vs Epoch")
-    plt.legend()
-    plt.savefig(os.path.join(SAVE_PATH, "TrainDice.png"))
-    plt.close()
+    plt.ylabel("Training Dice Similarity Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3TrainDice.png"))
+    plt.show()
 
-    # -------------------------------
-    # 5️⃣ Validation Dice per Class
-    # -------------------------------
+    # Validation Dice per class
     plt.figure()
-    for c in range(NUM_CLASSES):
-        plt.plot(epochs, val_dice_hist[:, c], label=f"Class {c}")
-    
-    # class_names = ["Background", "Body", "Bone", "Bladder", "Rectum", "Prostate"]
-    # for c, name in enumerate(class_names):
-    #     plt.plot(epochs, train_dice_hist[:, c], label=f"{name} DSC")
-    
+    plt.plot(epochs, history["val_background_dsc"], label="Background DSC")
+    plt.plot(epochs, history["val_body_dsc"], label="Body DSC")
+    plt.plot(epochs, history["val_bone_dsc"], label="Bone DSC")
+    plt.plot(epochs, history["val_bladder_dsc"], label="Bladder DSC")
+    plt.plot(epochs, history["val_rectum_dsc"], label="Rectum DSC")
+    plt.plot(epochs, history["val_prostate_dsc"], label="Prostate DSC")
+    plt.legend(loc="upper left")
+    plt.title("Validation Dice Similarity Coefficients For Each Class")
     plt.xlabel("Epoch")
-    plt.ylabel("Dice Coefficient")
-    plt.title("Validation Dice Similarity Coefficient per Class vs Epoch")
-    plt.legend()
-    plt.savefig(os.path.join(SAVE_PATH, "ValDice.png"))
-    plt.close()
-
-    # -------------------------------
-    # 3b️ Multiclass Dice Coefficient vs Epoch
-    # -------------------------------
-    plt.figure(figsize=(6, 4))
-
-    # Compute mean Dice (multiclass) for each epoch
-    train_mean_dice = [d.mean() for d in train_dice_hist]
-    val_mean_dice = [d.mean() for d in val_dice_hist]
-
-    plt.plot(epochs, train_mean_dice, marker='o', color='tab:blue', linewidth=1.8,
-            label="Training Multiclass Dice Coefficient")
-    plt.plot(epochs, val_mean_dice, marker='o', color='tab:orange', linewidth=1.8,
-            label="Validation Multiclass Dice Coefficient")
-
-    # Add numeric value labels on both curves
-    for x, y in zip(epochs, val_mean_dice):
-        plt.text(x, y - 0.03, f"{y:.3f}", ha="center", va="bottom", fontsize=8, color='tab:orange')
-
-    for x, y in zip(epochs, train_mean_dice):
-        plt.text(x, y + 0.02, f"{y:.3f}", ha="center", va="bottom", fontsize=8, color='tab:blue')
-
-    plt.legend(loc="upper left", fontsize=9, frameon=True)
-    plt.title("Multiclass Dice Coefficient", fontsize=11)
-    plt.xlabel("Epoch", fontsize=10)
-    plt.ylabel("Multiclass Dice Coefficient", fontsize=10)
-    plt.ylim(0.0, 1.05)
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
-    plt.savefig(os.path.join(SAVE_PATH, "MultiDice.png"), dpi=300)
-    plt.close()
-
-
-    print("✅ Saved 6 plots to ./results/")
-    print("✅ Training complete.")
-
+    plt.ylabel("Validation Dice Similarity Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3ValDice.png"))
+    plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    train_model()
 
-
-# """
-# PyTorch training script for the 3D Improved UNet (Isensee et al. 2018).
-# Reproduces the TensorFlow version used in COMP3710 but uses torch + nibabel.
-# Includes Dice metrics, accuracy tracking, and plot saving.
-# """
-
-# import os
-# import time
-# import torch
-# import torch.nn as nn
-# import torch.optim as optim
-# from torch.utils.data import DataLoader, random_split
-# import matplotlib.pyplot as plt
-# import numpy as np
-
-# from modules import ImprovedUNet3D
-# from dataset import Prostate3DDataset, discover_pairs
-
-# # -------------------------------
-# # Config
-# # -------------------------------
-# DATA_ROOT_IMAGES = "/home/groups/comp3710/HipMRI_Study_open/semantic_MRs"
-# DATA_ROOT_LABELS = "/home/groups/comp3710/HipMRI_Study_open/semantic_labels_only"
-
-# SAVE_PATH = "./results/"
-# os.makedirs(SAVE_PATH, exist_ok=True)
-
-# EPOCHS = 10
-# BATCH_SIZE = 2
-# LR = 1e-4
-# VAL_SPLIT = 0.1
-# TEST_SPLIT = 0.1
-# DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# # -------------------------------
-# # Dice Coefficient
-# # -------------------------------
-# def dice_coefficient(pred, target, num_classes=6, epsilon=1e-5):
-#     """Multi-class Dice Similarity Coefficient"""
-#     pred = torch.argmax(pred, dim=1)  # [B, D, H, W]
-#     dice_scores = []
-#     for cls in range(num_classes):
-#         pred_cls = (pred == cls).float()
-#         target_cls = (target == cls).float()
-#         intersection = torch.sum(pred_cls * target_cls)
-#         union = torch.sum(pred_cls) + torch.sum(target_cls)
-#         dice = (2 * intersection + epsilon) / (union + epsilon)
-#         dice_scores.append(dice.item())
-#     return dice_scores
-
-# # -------------------------------
-# # Train & Validate
-# # -------------------------------
-# def train_one_epoch(model, loader, optimizer, criterion):
-#     model.train()
-#     total_loss = 0
-#     for imgs, lbls in loader:
-#         imgs, lbls = imgs.to(DEVICE), lbls.to(DEVICE)
-#         optimizer.zero_grad()
-#         preds = model(imgs)
-#         loss = criterion(preds, lbls.squeeze(1).long())
-
-
-#         loss.backward()
-#         optimizer.step()
-#         total_loss += loss.item()
-#     return total_loss / len(loader)
-
-
-# @torch.no_grad()
-# def validate(model, loader, criterion):
-#     model.eval()
-#     total_loss = 0
-#     dice_list = []
-#     for imgs, lbls in loader:
-#         imgs, lbls = imgs.to(DEVICE), lbls.to(DEVICE)
-#         preds = model(imgs)
-#         loss = criterion(preds, lbls.squeeze(1).long())
-
-#         total_loss += loss.item()
-#         dice_list.append(dice_coefficient(preds, lbls))
-#     dice_array = np.array(dice_list)
-#     mean_dice = dice_array.mean(axis=0)
-#     return total_loss / len(loader), mean_dice
-
-
-# # -------------------------------
-# # Main Training Function
-# # -------------------------------
-# def main():
-#     print("🚀 Starting training of 3D Improved UNet...")
-#     imgs, lbls = discover_pairs(DATA_ROOT_IMAGES, DATA_ROOT_LABELS)
-#     print(f"✅ Found {len(imgs)} image/label pairs")
-
-#     dataset = Prostate3DDataset(imgs, lbls, downsample=(0.25, 0.25, 0.25), augment=True)
-#     n_total = len(dataset)
-#     n_test = int(TEST_SPLIT * n_total)
-#     n_val = int(VAL_SPLIT * n_total)
-#     n_train = n_total - n_test - n_val
-#     train_ds, val_ds, test_ds = random_split(dataset, [n_train, n_val, n_test])
-
-#     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-#     val_loader = DataLoader(val_ds, batch_size=1)
-#     test_loader = DataLoader(test_ds, batch_size=1)
-
-#     print(f"Dataset split: Train={n_train}, Val={n_val}, Test={n_test}")
-
-#     model = ImprovedUNet3D(num_classes=6).to(DEVICE)
-#     criterion = nn.CrossEntropyLoss()
-#     optimizer = optim.Adam(model.parameters(), lr=LR)
-
-#     train_losses, val_losses = [], []
-#     val_dice_scores = []
-
-#     for epoch in range(1, EPOCHS + 1):
-#         t0 = time.time()
-#         train_loss = train_one_epoch(model, train_loader, optimizer, criterion)
-#         val_loss, dice = validate(model, val_loader, criterion)
-#         t1 = time.time()
-
-#         train_losses.append(train_loss)
-#         val_losses.append(val_loss)
-#         val_dice_scores.append(dice)
-
-#         print(f"Epoch {epoch}/{EPOCHS} - "
-#               f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
-#               f"Dice: {dice.mean():.3f}, Time: {(t1 - t0):.1f}s")
-
-#     # -------------------------------
-#     # Save Results
-#     # -------------------------------
-#     torch.save(model.state_dict(), os.path.join(SAVE_PATH, "improved_3d_unet.pth"))
-#     print("✅ Model saved to", os.path.join(SAVE_PATH, "improved_3d_unet.pth"))
-
-#     plt.figure()
-#     plt.plot(train_losses, label="Train Loss")
-#     plt.plot(val_losses, label="Val Loss")
-#     plt.title("Loss vs Epochs")
-#     plt.xlabel("Epoch")
-#     plt.ylabel("Loss")
-#     plt.legend()
-#     plt.savefig(os.path.join(SAVE_PATH, "Loss.png"))
-#     plt.show()
-
-#     val_dice_scores = np.array(val_dice_scores)
-#     mean_dice_per_class = val_dice_scores.mean(axis=0)
-#     plt.figure()
-#     plt.bar(range(6), mean_dice_per_class)
-#     plt.title("Mean Dice Coefficient per Class (Validation)")
-#     plt.xlabel("Class")
-#     plt.ylabel("Dice")
-#     plt.savefig(os.path.join(SAVE_PATH, "Dice.png"))
-#     plt.show()
-
-#     print("✅ Mean Dice per class:", np.round(mean_dice_per_class, 3))
-
-#     # Evaluate on test set
-#     test_loss, test_dice = validate(model, test_loader, criterion)
-#     print("\n🧪 Test Results:")
-#     print("Test Loss:", round(test_loss, 4))
-#     print("Test Dice per class:", np.round(test_dice, 3))
-#     print("Mean Dice:", test_dice.mean().round(3))
-
-
-# if __name__ == "__main__":
-#     main()

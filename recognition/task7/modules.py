@@ -1,8 +1,7 @@
 """
 PyTorch implementation of the 3D Improved UNet (Isensee et al., 2018).
-This version replicates the TensorFlow architecture used in the COMP3710 reference project.
 
-
+edited Localization -> Localisation
 """
 
 import torch
@@ -55,7 +54,7 @@ class DownBlock(nn.Module):
         context = self.context(x)
         return x + context
 
-class LocalizationBlock(nn.Module):
+class LocalisationBlock(nn.Module):
     """Localisation module: 3x3x3 + 1x1x1 convs"""
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -121,15 +120,15 @@ class ImprovedUNet3D(nn.Module):
 
         # Decoder (Up)
         self.up4 = UpBlock(base_filters*16, base_filters*8)
-        self.loc4 = LocalizationBlock(base_filters*8 + base_filters*8, base_filters*8)
+        self.loc4 = LocalisationBlock(base_filters*8 + base_filters*8, base_filters*8)
 
         self.up3 = UpBlock(base_filters*8, base_filters*4)
-        self.loc3 = LocalizationBlock(base_filters*4 + base_filters*4, base_filters*4)
+        self.loc3 = LocalisationBlock(base_filters*4 + base_filters*4, base_filters*4)
 
         self.seg3 = SegmentationLayer(base_filters*4, num_classes)
 
         self.up2 = UpBlock(base_filters*4, base_filters*2)
-        self.loc2 = LocalizationBlock(base_filters*2 + base_filters*2, base_filters*2)
+        self.loc2 = LocalisationBlock(base_filters*2 + base_filters*2, base_filters*2)
         self.seg2 = SegmentationLayer(base_filters*2, num_classes)
 
         self.up1 = UpBlock(base_filters*2, base_filters)
