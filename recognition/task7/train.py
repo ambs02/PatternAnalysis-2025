@@ -90,3 +90,23 @@ def dice_per_class_from_oh(y_true_oh: torch.Tensor, y_pred_oh: torch.Tensor, eps
     p_sum = torch.sum(y_pred_oh, dim=dims)                       # [C]
     dsc = (2.0 * inter + eps) / (y_sum + p_sum + eps)            # [C]
     return dsc.detach().cpu().numpy()
+
+def multiclass_dice_coefficient(y_true_oh: torch.Tensor, y_pred_logits: torch.Tensor) -> float:
+    """TF-style function signature name, but in PyTorch."""
+    y_pred_oh = _to_one_hot(y_pred_logits, NUM_CLASSES)
+    return _multiclass_dice_from_oh(y_true_oh, y_pred_oh)
+
+
+def dice_coefficient(y_true_oh: torch.Tensor, y_pred_logits: torch.Tensor, class_number: int) -> float:
+    """Per-class Dice (matches TF helper style)."""
+    y_pred_oh = _to_one_hot(y_pred_logits, NUM_CLASSES)
+    dsc = dice_per_class_from_oh(y_true_oh, y_pred_oh)
+    return float(dsc[class_number])
+
+
+def background_dsc(y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 0)
+def body_dsc      (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 1)
+def bone_dsc      (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 2)
+def bladder_dsc   (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 3)
+def rectum_dsc    (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 4)
+def prostate_dsc  (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 5)
