@@ -260,4 +260,16 @@ def train_model():
         history["val_rectum_dsc"].append(va_per_class[4])
         history["val_prostate_dsc"].append(va_per_class[5])
 
-    
+    # Testing 
+    te_loss, te_acc, te_mdsc, te_per_class = run_epoch(model, test_loader, optimizer, criterion, training=False)
+    print("\nTest metrics:")
+    print(f"  Loss: {te_loss:.4f} | Accuracy: {te_acc:.4f} | Multiclass Dice: {te_mdsc:.4f}")
+    print("  Per-class Dice:")
+    for name, v in zip(CLASS_NAMES, te_per_class):
+        print(f"    {name}: {v:.4f}")
+
+    # Save model
+    torch.save(model.state_dict(), os.path.join(SAVED_RESULTS_PATH, "improved_3d_unet_model.pth"))
+    print(f"\n Model saved to {os.path.join(SAVED_RESULTS_PATH, 'improved_3d_unet_model.pth')}")
+
+   
