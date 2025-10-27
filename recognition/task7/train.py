@@ -272,4 +272,73 @@ def train_model():
     torch.save(model.state_dict(), os.path.join(SAVED_RESULTS_PATH, "improved_3d_unet_model.pth"))
     print(f"\n Model saved to {os.path.join(SAVED_RESULTS_PATH, 'improved_3d_unet_model.pth')}")
 
-   
+    # Plots
+    epochs = range(EPOCHS)
+
+    # Accuracy
+    plt.figure()
+    plt.plot(epochs, history["accuracy"], label="Training Accuracy")
+    plt.plot(epochs, history["val_accuracy"], label="Validation Accuracy")
+    plt.legend(loc="upper left")
+    plt.title("Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3Accuracy.png"))
+    plt.show()
+
+    # Loss
+    plt.figure()
+    plt.plot(epochs, history["loss"], label="Training Loss")
+    plt.plot(epochs, history["val_loss"], label="Validation Loss")
+    plt.legend(loc="upper left")
+    plt.title("Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3Loss.png"))
+    plt.show()
+
+    # Multiclass Dice Coefficient
+    plt.figure()
+    plt.plot(epochs, history["multiclass_dice_coefficient"], label="Training Multiclass Dice Coefficient")
+    plt.plot(epochs, history["val_multiclass_dice_coefficient"], label="Validation Multiclass Dice Coefficient")
+    plt.legend(loc="upper left")
+    plt.title("Multiclass Dice Coefficient")
+    plt.xlabel("Epoch")
+    plt.ylabel("Multiclass Dice Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3MulticlassDice.png"))
+    plt.show()
+
+    # Training Dice per class
+    plt.figure()
+    plt.plot(epochs, history["background_dsc"], label="Background DSC")
+    plt.plot(epochs, history["body_dsc"], label="Body DSC")
+    plt.plot(epochs, history["bone_dsc"], label="Bone DSC")
+    plt.plot(epochs, history["bladder_dsc"], label="Bladder DSC")
+    plt.plot(epochs, history["rectum_dsc"], label="Rectum DSC")
+    plt.plot(epochs, history["prostate_dsc"], label="Prostate DSC")
+    plt.legend(loc="upper left")
+    plt.title("Training Dice Similarity Coefficients For Each Class")
+    plt.xlabel("Epoch")
+    plt.ylabel("Training Dice Similarity Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3TrainDice.png"))
+    plt.show()
+
+    # Validation Dice per class
+    plt.figure()
+    plt.plot(epochs, history["val_background_dsc"], label="Background DSC")
+    plt.plot(epochs, history["val_body_dsc"], label="Body DSC")
+    plt.plot(epochs, history["val_bone_dsc"], label="Bone DSC")
+    plt.plot(epochs, history["val_bladder_dsc"], label="Bladder DSC")
+    plt.plot(epochs, history["val_rectum_dsc"], label="Rectum DSC")
+    plt.plot(epochs, history["val_prostate_dsc"], label="Prostate DSC")
+    plt.legend(loc="upper left")
+    plt.title("Validation Dice Similarity Coefficients For Each Class")
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation Dice Similarity Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3ValDice.png"))
+    plt.show()
+
+
+if __name__ == "__main__":
+    train_model()
+
