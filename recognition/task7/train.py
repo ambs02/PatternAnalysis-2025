@@ -110,3 +110,61 @@ def bone_dsc      (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh,
 def bladder_dsc   (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 3)
 def rectum_dsc    (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 4)
 def prostate_dsc  (y_true_oh, y_pred_logits): return dice_coefficient(y_true_oh, y_pred_logits, 5)
+
+
+
+def _prepare_targets(lbls: torch.Tensor) -> torch.Tensor:
+    # Dataset returns [1, D, H, W] labels; squeeze channel for CE
+    if lbls.ndim == 5 and lbls.shape[1] == 1:
+        lbls = lbls.squeeze(1)
+    return lbls.long()
+
+def run_epoch(model, loader, optimizer, criterion, training: bool):
+    if training:
+        model.train()
+    else:
+        model.eval()
+
+    total_loss = 0.0
+    total_correct = 0
+    total_voxels = 0
+
+    # For TF-style metric tracking
+    mc_dice_vals = []
+    per_class_dice_collect = []
+
+    with torch.enable_grad() if training else torch.no_grad():
+        for imgs, lbls in loader:
+            imgs = imgs.to(DEVICE)               # [B,1,D,H,W]
+            lbls = _prepare_targets(lbls).to(DEVICE)  # [B,D,H,W]
+
+            logits = model(imgs)                 # [B,C,D,H,W]
+            loss = criterion(logits, lbls)
+
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.item()
+
+            # Accuracy (per-voxel)
+            pred = torch.argmax(logits, dim=1)   # [B,D,H,W]
+            total_correct += (pred == lbls).sum().item()
+            total_voxels += lbls.numel()
+
+            # One-hot GT for dice metrics
+            gt_oh = torch.nn.functional.one_hot(lbls, NUM_CLASSES).permute(0, 4, 1, 2, 3).float()
+
+            # Multiclass dice
+            mc_dice_vals.append(multiclass_dice_coefficient(gt_oh, logits))
+
+            # Per-class dice
+            per_class_dice_collect.append(dice_per_class_from_oh(gt_oh, _to_one_hot(logits, NUM_CLASSES)))
+
+    mean_loss = total_loss / max(1, len(loader))
+    acc = total_correct / max(1, total_voxels)
+    mean_mc_dice = float(np.mean(mc_dice_vals)) if mc_dice_vals else 0.0
+    mean_per_class_dice = np.mean(np.stack(per_class_dice_collect, axis=0), axis=0) if per_class_dice_collect else np.zeros(NUM_CLASSES)
+
+    return mean_loss, acc, mean_mc_dice, mean_per_class_dice
