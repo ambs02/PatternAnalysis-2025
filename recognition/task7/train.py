@@ -168,3 +168,177 @@ def run_epoch(model, loader, optimizer, criterion, training: bool):
     mean_per_class_dice = np.mean(np.stack(per_class_dice_collect, axis=0), axis=0) if per_class_dice_collect else np.zeros(NUM_CLASSES)
 
     return mean_loss, acc, mean_mc_dice, mean_per_class_dice
+
+
+def train_model():
+    """
+    Train the model and calculate training, validation and test results.
+    Mirrors the structure of the original TensorFlow script, using PyTorch.
+    """
+
+    # Data discover
+    imgs, lbls = discover_pairs(DATA_ROOT_IMAGES, DATA_ROOT_LABELS)
+
+    # Dataset split
+    full_ds = Prostate3DDataset(imgs, lbls, downsample=(0.5, 0.5, 0.5), augment=True)
+    n_total = len(full_ds)
+    n_test = int(TEST_SPLIT * n_total)
+    n_val = int(VAL_SPLIT * n_total)
+    n_train = n_total - n_test - n_val
+
+    train_ds, val_ds, test_ds = random_split(full_ds, [n_train, n_val, n_test])
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_LENGTH, shuffle=True, num_workers=1, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=BATCH_LENGTH, shuffle=False, num_workers=1, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=BATCH_LENGTH, shuffle=False, num_workers=1, pin_memory=True)
+
+    # Build model 
+    model = ImprovedUNet3D(num_classes=NUM_CLASSES).to(DEVICE)
+    print(model)
+
+    # Loss / Optimiser
+    class_weights = None
+    # Define class weights for CE and Dice parts
+    ce_class_weights   = torch.tensor([0.05, 0.20, 0.60, 1.20, 1.60, 1.80], device=DEVICE)
+    dice_class_weights = torch.tensor([0.05, 0.20, 0.60, 1.20, 1.60, 1.80], device=DEVICE)
+
+    # Hybrid loss
+    criterion = DiceCELoss(
+        ce_weight=0.5,
+        smooth=1e-5,
+        label_smooth=0.0,
+        ce_class_weights=ce_class_weights,
+        dice_class_weights=dice_class_weights
+    )
+
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+
+    # Training
+    history = {
+        "accuracy": [], "val_accuracy": [],
+        "loss": [], "val_loss": [],
+        "multiclass_dice_coefficient": [], "val_multiclass_dice_coefficient": [],
+        "background_dsc": [], "body_dsc": [], "bone_dsc": [], "bladder_dsc": [], "rectum_dsc": [], "prostate_dsc": [],
+        "val_background_dsc": [], "val_body_dsc": [], "val_bone_dsc": [], "val_bladder_dsc": [], "val_rectum_dsc": [], "val_prostate_dsc": [],
+    }
+
+    for epoch in range(EPOCHS):
+        t0 = time.time()
+
+        # Train epoch
+        tr_loss, tr_acc, tr_mdsc, tr_per_class = run_epoch(model, train_loader, optimizer, criterion, training=True)
+        # Val epoch
+        va_loss, va_acc, va_mdsc, va_per_class = run_epoch(model, val_loader, optimizer, criterion, training=False)
+
+        t1 = time.time()
+        print(f"Epoch {epoch+1}/{EPOCHS} | "
+              f"Train Loss {tr_loss:.4f} Acc {tr_acc:.3f} MC-Dice {tr_mdsc:.3f} | "
+              f"Val Loss {va_loss:.4f} Acc {va_acc:.3f} MC-Dice {va_mdsc:.3f} | "
+              f"Time {(t1 - t0):.1f}s")
+
+        # Log like Keras .history
+        history["loss"].append(tr_loss)
+        history["val_loss"].append(va_loss)
+        history["accuracy"].append(tr_acc)
+        history["val_accuracy"].append(va_acc)
+        history["multiclass_dice_coefficient"].append(tr_mdsc)
+        history["val_multiclass_dice_coefficient"].append(va_mdsc)
+
+        # Per-class (train)
+        history["background_dsc"].append(tr_per_class[0])
+        history["body_dsc"].append(tr_per_class[1])
+        history["bone_dsc"].append(tr_per_class[2])
+        history["bladder_dsc"].append(tr_per_class[3])
+        history["rectum_dsc"].append(tr_per_class[4])
+        history["prostate_dsc"].append(tr_per_class[5])
+
+        # Per-class (val)
+        history["val_background_dsc"].append(va_per_class[0])
+        history["val_body_dsc"].append(va_per_class[1])
+        history["val_bone_dsc"].append(va_per_class[2])
+        history["val_bladder_dsc"].append(va_per_class[3])
+        history["val_rectum_dsc"].append(va_per_class[4])
+        history["val_prostate_dsc"].append(va_per_class[5])
+
+    # Testing 
+    te_loss, te_acc, te_mdsc, te_per_class = run_epoch(model, test_loader, optimizer, criterion, training=False)
+    print("\nTest metrics:")
+    print(f"  Loss: {te_loss:.4f} | Accuracy: {te_acc:.4f} | Multiclass Dice: {te_mdsc:.4f}")
+    print("  Per-class Dice:")
+    for name, v in zip(CLASS_NAMES, te_per_class):
+        print(f"    {name}: {v:.4f}")
+
+    # Save model
+    torch.save(model.state_dict(), os.path.join(SAVED_RESULTS_PATH, "improved_3d_unet_model.pth"))
+    print(f"\n Model saved to {os.path.join(SAVED_RESULTS_PATH, 'improved_3d_unet_model.pth')}")
+
+    # Plots
+    epochs = range(EPOCHS)
+
+    # Accuracy
+    plt.figure()
+    plt.plot(epochs, history["accuracy"], label="Training Accuracy")
+    plt.plot(epochs, history["val_accuracy"], label="Validation Accuracy")
+    plt.legend(loc="upper left")
+    plt.title("Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3Accuracy.png"))
+    plt.show()
+
+    # Loss
+    plt.figure()
+    plt.plot(epochs, history["loss"], label="Training Loss")
+    plt.plot(epochs, history["val_loss"], label="Validation Loss")
+    plt.legend(loc="upper left")
+    plt.title("Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3Loss.png"))
+    plt.show()
+
+    # Multiclass Dice Coefficient
+    plt.figure()
+    plt.plot(epochs, history["multiclass_dice_coefficient"], label="Training Multiclass Dice Coefficient")
+    plt.plot(epochs, history["val_multiclass_dice_coefficient"], label="Validation Multiclass Dice Coefficient")
+    plt.legend(loc="upper left")
+    plt.title("Multiclass Dice Coefficient")
+    plt.xlabel("Epoch")
+    plt.ylabel("Multiclass Dice Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3MulticlassDice.png"))
+    plt.show()
+
+    # Training Dice per class
+    plt.figure()
+    plt.plot(epochs, history["background_dsc"], label="Background DSC")
+    plt.plot(epochs, history["body_dsc"], label="Body DSC")
+    plt.plot(epochs, history["bone_dsc"], label="Bone DSC")
+    plt.plot(epochs, history["bladder_dsc"], label="Bladder DSC")
+    plt.plot(epochs, history["rectum_dsc"], label="Rectum DSC")
+    plt.plot(epochs, history["prostate_dsc"], label="Prostate DSC")
+    plt.legend(loc="upper left")
+    plt.title("Training Dice Similarity Coefficients For Each Class")
+    plt.xlabel("Epoch")
+    plt.ylabel("Training Dice Similarity Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3TrainDice.png"))
+    plt.show()
+
+    # Validation Dice per class
+    plt.figure()
+    plt.plot(epochs, history["val_background_dsc"], label="Background DSC")
+    plt.plot(epochs, history["val_body_dsc"], label="Body DSC")
+    plt.plot(epochs, history["val_bone_dsc"], label="Bone DSC")
+    plt.plot(epochs, history["val_bladder_dsc"], label="Bladder DSC")
+    plt.plot(epochs, history["val_rectum_dsc"], label="Rectum DSC")
+    plt.plot(epochs, history["val_prostate_dsc"], label="Prostate DSC")
+    plt.legend(loc="upper left")
+    plt.title("Validation Dice Similarity Coefficients For Each Class")
+    plt.xlabel("Epoch")
+    plt.ylabel("Validation Dice Similarity Coefficient")
+    plt.savefig(os.path.join(SAVED_RESULTS_PATH, "3ValDice.png"))
+    plt.show()
+
+
+if __name__ == "__main__":
+    train_model()
+
