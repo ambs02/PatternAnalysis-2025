@@ -213,4 +213,51 @@ def train_model():
 
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
+    # Training
+    history = {
+        "accuracy": [], "val_accuracy": [],
+        "loss": [], "val_loss": [],
+        "multiclass_dice_coefficient": [], "val_multiclass_dice_coefficient": [],
+        "background_dsc": [], "body_dsc": [], "bone_dsc": [], "bladder_dsc": [], "rectum_dsc": [], "prostate_dsc": [],
+        "val_background_dsc": [], "val_body_dsc": [], "val_bone_dsc": [], "val_bladder_dsc": [], "val_rectum_dsc": [], "val_prostate_dsc": [],
+    }
+
+    for epoch in range(EPOCHS):
+        t0 = time.time()
+
+        # Train epoch
+        tr_loss, tr_acc, tr_mdsc, tr_per_class = run_epoch(model, train_loader, optimizer, criterion, training=True)
+        # Val epoch
+        va_loss, va_acc, va_mdsc, va_per_class = run_epoch(model, val_loader, optimizer, criterion, training=False)
+
+        t1 = time.time()
+        print(f"Epoch {epoch+1}/{EPOCHS} | "
+              f"Train Loss {tr_loss:.4f} Acc {tr_acc:.3f} MC-Dice {tr_mdsc:.3f} | "
+              f"Val Loss {va_loss:.4f} Acc {va_acc:.3f} MC-Dice {va_mdsc:.3f} | "
+              f"Time {(t1 - t0):.1f}s")
+
+        # Log like Keras .history
+        history["loss"].append(tr_loss)
+        history["val_loss"].append(va_loss)
+        history["accuracy"].append(tr_acc)
+        history["val_accuracy"].append(va_acc)
+        history["multiclass_dice_coefficient"].append(tr_mdsc)
+        history["val_multiclass_dice_coefficient"].append(va_mdsc)
+
+        # Per-class (train)
+        history["background_dsc"].append(tr_per_class[0])
+        history["body_dsc"].append(tr_per_class[1])
+        history["bone_dsc"].append(tr_per_class[2])
+        history["bladder_dsc"].append(tr_per_class[3])
+        history["rectum_dsc"].append(tr_per_class[4])
+        history["prostate_dsc"].append(tr_per_class[5])
+
+        # Per-class (val)
+        history["val_background_dsc"].append(va_per_class[0])
+        history["val_body_dsc"].append(va_per_class[1])
+        history["val_bone_dsc"].append(va_per_class[2])
+        history["val_bladder_dsc"].append(va_per_class[3])
+        history["val_rectum_dsc"].append(va_per_class[4])
+        history["val_prostate_dsc"].append(va_per_class[5])
+
     
