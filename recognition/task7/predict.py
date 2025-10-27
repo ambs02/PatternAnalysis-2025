@@ -189,3 +189,21 @@ def display_and_save_examples(dataset, number_of_examples, model, device):
             break
 
 
+def predict_model():
+    print("Loading trained model...")
+    model_path = os.path.join(SAVED_RESULTS_PATH, "improved_3d_unet_model.pth")
+    model = ImprovedUNet3D().to(DEVICE)
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+    model.eval()
+    print(f"Loaded model from {model_path}")
+
+    imgs, lbls = discover_pairs(DATA_ROOT_IMAGES, DATA_ROOT_LABELS)
+    print(f"Found {len(imgs)} matching pairs between '{DATA_ROOT_IMAGES}' and '{DATA_ROOT_LABELS}'.")
+    test_dataset = Prostate3DDataset(imgs, lbls, downsample=(0.5, 0.5, 0.5), augment=False)
+    print(f"Dataset size: {len(test_dataset)} samples")
+
+    display_and_save_examples(test_dataset, 3, model, DEVICE)
+
+
+if __name__ == "__main__":
+    predict_model()
