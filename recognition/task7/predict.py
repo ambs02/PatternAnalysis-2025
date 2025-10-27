@@ -152,3 +152,40 @@ def save_combined_gif(img, true_mask, pred_mask, index):
     plt.close(fig)
     print(f"Saved combined animation to {out_path}")
 
+
+# Core prediction
+@torch.no_grad()
+def display_and_save_examples(dataset, number_of_examples, model, device):
+    model.eval()
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
+
+    for count, (imgs, lbls) in enumerate(loader):
+        if lbls.ndim == 5 and lbls.shape[1] == 1:
+            lbls = lbls.squeeze(1)
+        imgs, lbls = imgs.to(device), lbls.long().to(device)
+
+        logits = model(imgs)
+        probs = F.softmax(logits, dim=1)
+        pred = probs.argmax(dim=1)
+
+        dpc = dice_per_class(logits, lbls)
+        mdc = float(dpc.mean())
+        print(f"\n Example {count+1}:")
+        print(f"  Multiclass Dice: {mdc:.4f}")
+        class_names = ["Background", "Body", "Bone", "Bladder", "Rectum", "Prostate"]
+        for i, name in enumerate(class_names):
+            print(f"  {name} DSC: {dpc[i]:.4f}")
+
+        img_np = imgs.detach().cpu().numpy()[0, 0]
+        true_np = lbls.detach().cpu().numpy()[0]
+        pred_np = pred.detach().cpu().numpy()[0]
+
+        save_volume_gif(img_np, "InputImage", count)
+        save_volume_gif(true_np, "TrueMask", count)
+        save_volume_gif(pred_np, "PredictedMask", count)
+        save_combined_gif(img_np, true_np, pred_np, count)
+
+        if count + 1 >= number_of_examples:
+            break
+
+
