@@ -59,3 +59,34 @@ class DiceCELoss(nn.Module):
             dice_loss = dice_loss_c.mean()
 
         return self.ce_weight * ce_loss + (1.0 - self.ce_weight) * dice_loss
+    
+def _to_one_hot(pred_logits: torch.Tensor, num_classes: int) -> torch.Tensor:
+    """Logits [B,C,D,H,W] -> one-hot [B,C,D,H,W] via argmax."""
+    pred = torch.argmax(pred_logits, dim=1)                      # [B,D,H,W]
+    pred_oh = torch.nn.functional.one_hot(pred, num_classes)     # [B,D,H,W,C]
+    return pred_oh.permute(0, 4, 1, 2, 3).float()
+
+
+def _multiclass_dice_from_oh(y_true_oh: torch.Tensor, y_pred_oh: torch.Tensor, eps=1e-5) -> float:
+    """
+    Multiclass dice coefficient as defined in TF reference:
+    mdsc = (2/6) * sum_c ( (|Y∩P| + eps) / (|Y| + |P| + eps) )
+    """
+    # Reduce over batch and spatial dims
+    dims = (0, 2, 3, 4)
+    inter = torch.sum(y_true_oh * y_pred_oh, dim=dims)           # [C]
+    y_sum = torch.sum(y_true_oh, dim=dims)                       # [C]
+    p_sum = torch.sum(y_pred_oh, dim=dims)                       # [C]
+    per_class = (inter + eps) / (y_sum + p_sum + eps)            # [C]
+    mdsc = (2.0 / y_true_oh.shape[1]) * torch.sum(per_class)     # scalar
+    return mdsc.item()
+
+
+def dice_per_class_from_oh(y_true_oh: torch.Tensor, y_pred_oh: torch.Tensor, eps=1e-5) -> np.ndarray:
+    """Return per-class Dice (C,) using 2*|∩|/(|Y|+|P|) over batch+spatial dims."""
+    dims = (0, 2, 3, 4)
+    inter = torch.sum(y_true_oh * y_pred_oh, dim=dims)           # [C]
+    y_sum = torch.sum(y_true_oh, dim=dims)                       # [C]
+    p_sum = torch.sum(y_pred_oh, dim=dims)                       # [C]
+    dsc = (2.0 * inter + eps) / (y_sum + p_sum + eps)            # [C]
+    return dsc.detach().cpu().numpy()
