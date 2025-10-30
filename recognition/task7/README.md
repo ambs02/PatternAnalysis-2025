@@ -32,9 +32,9 @@ The 3D Improved UNet was specifically developed to segment 3D volumetric data. T
 
 | 3D Improved UNet (resource) |
 | --- |
-| ![](./recognition/task7/results/3D_Improved_UNet.png) |
+| ![](./results/3D_Improved_UNet.png) |
 
-Although the ![paper referenced](reference) originally employed multiclass Dice loss, this implementated uses a hybrid Dice-Cross Entropy loss (DiceCELoss) with class weighting and optional lable smoothing. This approach provided more stable gradient flow, improved convergence speed, and yielded higher Dice similarity coefficients across all classes during evaluation. 
+Although the ![Reference Paper](https://arxiv.org/pdf/1802.10508v1) originally employed multiclass Dice loss, this implementated uses a hybrid Dice-Cross Entropy loss (DiceCELoss) with class weighting and optional lable smoothing. This approach provided more stable gradient flow, improved convergence speed, and yielded higher Dice similarity coefficients across all classes during evaluation. 
 
 ### Downsampling Path (Encoder)
 The downsampling path is composed of five levels, each progressively halving the spatial resolution and doubling the number of feature maps (from 16 to 256). Each level consists of a DownBlock which includes:
@@ -70,11 +70,11 @@ The final segmentation map is generated through a 1x1x1 convolution followed by 
 
 
 ## Dataset
-For this project, the 3D Improved UNet model was trained and evaluated on the ![3D Prostate MRI dataset](reference), which contains male pelvis MRI data from 38 patients and 211 volumetric MRI scans.
+For this project, the 3D Improved UNet model was trained and evaluated on the ![3D Prostate MRI dataset](https://data.csiro.au/collection/csiro:51392v2?redirected=true), which contains male pelvis MRI data from 38 patients and 211 volumetric MRI scans.
 
 Each image was manually segmented by an expert MR physicist into six anatomical classes - background, body, bone, bladder, rectum and prostate - making it suitable for multiclass volumetric segmentation.
 
-The dataset was split into 80% training, 10% validation, and 10% testing subsets, following the recommended ratio for the UNet-style segmentation models (reference).
+The dataset was split into 80% training, 10% validation, and 10% testing subsets, following the recommended ratio for the UNet-style segmentation models (Lin et al., 2024).
 
 To improve generalisation and reduce overfitting, 3D geometric augmentations were applied to the training set through reflections in all three spatial dimensions (eight total combinations).
 
@@ -95,7 +95,7 @@ nibabel 5.2.1
 
 ### Reproducing results
 To reproduce the traiing and prediction results shwon below:
-1. Download the [dataset](reference)
+1. Download the [3D Prostate MRI dataset](https://data.csiro.au/collection/csiro:51392v2?redirected=true)
 2. Ensure the folder structure follows the format below:
 ```
 > HipMRI_study_complete_release_v1
@@ -188,4 +188,8 @@ As seen above, all Dice coefficients exceed the 0.7 target threshold, demonstrat
 
 
 ## References
-refernce
+CSIRO Data Access Portal. (2025). Csiro.au. https://data.csiro.au/collection/csiro:51392v2?redirected=true
+
+Isensee, F., Kickingereder, P., Wick, W., Bendszus, M., & Maier-Hein, K. (n.d.). Brain Tumor Segmentation and Radiomics Survival Prediction: Contribution to the BRATS 2017 Challenge. https://arxiv.org/pdf/1802.10508v1
+
+Lin, M., Weng, N., Mikolaj, K., Bashir, Z., Bo Søndergaard Svendsen, M., Tolsgaard, M., Nymark Christensen, A., & Feragen, A. (2024). Shortcut Learning in Medical Image Segmentation. Arxiv.org. https://arxiv.org/html/2403.06748v1
