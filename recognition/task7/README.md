@@ -150,13 +150,13 @@ This approach improved convergence stability and per-class performance, especial
 As shown in the figures below, training proceeded smoothly.
 
 Both training and validation accuracy increase stadily, reaching around 98% by the final epoch 
-![](./recognition/task7/results/Accuracy.png)
+![](recognition/task7/results/Accuracy.png)
 
 As expected, training and validation loss decreased consistently, confirmed successful optimisation and stable convergence.
-![](./recognition/task7/results/Loss.png)
+![](recognition/task7/results/Loss.png)
 
 The multiclass Dice coefficient - measuring overall segmentation overlap across all classes - rose sharply to around 1.0, indicating excellent alignment between predicted and ground-truth segmentations. As expected, the multiclass dice similarity coefficient increased during training.
-![](./recognition/task7/results/MulticlassDice.png)
+![](recognition/task7/results/MulticlassDice.png)
 
 
 As seen below, Dice scores improved for every anatomical region, showing that the model successfully learned to distinguish both large structures (body, bone) and smaller, more irregular organs (bladder, rectum, prostate).
