@@ -150,17 +150,17 @@ This approach improved convergence stability and per-class performance, especial
 As shown in the figures below, training proceeded smoothly.
 
 Both training and validation accuracy increase stadily, reaching around 98% by the final epoch 
-![](recognition/task7/results/Accuracy.png)
+![](./results/Accuracy.png)
 
 As expected, training and validation loss decreased consistently, confirmed successful optimisation and stable convergence.
-![](recognition/task7/results/Loss.png)
+![](./results/Loss.png)
 
 The multiclass Dice coefficient - measuring overall segmentation overlap across all classes - rose sharply to around 1.0, indicating excellent alignment between predicted and ground-truth segmentations. As expected, the multiclass dice similarity coefficient increased during training.
-![](recognition/task7/results/MulticlassDice.png)
+![](./results/MulticlassDice.png)
 
 
 As seen below, Dice scores improved for every anatomical region, showing that the model successfully learned to distinguish both large structures (body, bone) and smaller, more irregular organs (bladder, rectum, prostate).
-![](./recognition/task7/results/TrainDice.png) | ![](./recognition/task7/results/ValDice.png)
+![](./results/TrainDice.png) | ![](./results/ValDice.png)
 --- | ---
 
 
@@ -170,9 +170,9 @@ To qualitatively assess model performance, three test samples were randomly sele
 
 Input | True | Predicted | Statistics
 --- | --- | --- | ---
-![](./recognition/task7/results/InputImage_0.gif) | ![](./recognition/task7/results/TrueMask_0.gif) | ![](./recognition/task7/results/PredictedMask_0.gif) | Multiclass DSC: 0.8809<br>Background DSC: 0.9964<br>Body DSC: 0.9693<br>Bone DSC: 0.7856<br>Bladder DSC: 0.7463<br>Rectum DSC: 1.0000<br>Prostate DSC: 0.7877
-![](./recognition/task7/results/InputImage_1.gif) | ![](./recognition/task7/results/TrueMask_1.gif) | ![](./recognition/task7/results/PredictedMask_1.gif) | Multiclass DSC: 0.8746<br>Background DSC: 0.9970<br>Body DSC: 0.9675<br>Bone DSC: 0.7895<br>Bladder 0.8008<br>Rectum DSC: 1.0000<br>Prostate DSC: 0.7026
-![](./recognition/task7/results/InputImage_2.gif) | ![](./recognition/task7/results/TrueMask_2.gif) | ![](./recognition/task7/results/PredictedMask_2.gif) | Multiclass DSC: 0.9160<br>Background DSC: 0.9981<br>Body DSC: 0.9737<br>Bone DSC: 0.8327<br>Bladder DSC: 0.9487<br>Rectum DSC: 1.0000<br>Prostate DSC: 0.7430
+![](./results/InputImage_0.gif) | ![](./results/TrueMask_0.gif) | ![](./results/PredictedMask_0.gif) | Multiclass DSC: 0.8809<br>Background DSC: 0.9964<br>Body DSC: 0.9693<br>Bone DSC: 0.7856<br>Bladder DSC: 0.7463<br>Rectum DSC: 1.0000<br>Prostate DSC: 0.7877
+![](./results/InputImage_1.gif) | ![](./results/TrueMask_1.gif) | ![](./results/PredictedMask_1.gif) | Multiclass DSC: 0.8746<br>Background DSC: 0.9970<br>Body DSC: 0.9675<br>Bone DSC: 0.7895<br>Bladder 0.8008<br>Rectum DSC: 1.0000<br>Prostate DSC: 0.7026
+![](./results/InputImage_2.gif) | ![](./results/TrueMask_2.gif) | ![](./results/PredictedMask_2.gif) | Multiclass DSC: 0.9160<br>Background DSC: 0.9981<br>Body DSC: 0.9737<br>Bone DSC: 0.8327<br>Bladder DSC: 0.9487<br>Rectum DSC: 1.0000<br>Prostate DSC: 0.7430
 
 As shown aboce, all three examples achieved Dice Similarity Coefficients (DSC) above 0.7 across all anatomical structures, confirmed that the 3D Improvement UNet generalises well to unseen data.
 
