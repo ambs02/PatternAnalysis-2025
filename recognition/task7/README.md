@@ -33,6 +33,7 @@ The 3D Improved UNet was specifically developed to segment 3D volumetric data. T
 | 3D Improved UNet (resource) |
 | --- |
 | ![](./results/3D_Improved_UNet.png) |
+[(Isensee et al., n.d.)](https://arxiv.org/abs/1802.10508v1) 
 
 Although the [reference paper](https://arxiv.org/abs/1802.10508v1) originally employed multiclass Dice loss, this implementated uses a hybrid Dice-Cross Entropy loss (DiceCELoss) with class weighting and optional lable smoothing. This approach provided more stable gradient flow, improved convergence speed, and yielded higher Dice similarity coefficients across all classes during evaluation. 
 
