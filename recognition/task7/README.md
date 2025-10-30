@@ -34,7 +34,7 @@ The 3D Improved UNet was specifically developed to segment 3D volumetric data. T
 | --- |
 | ![](./results/3D_Improved_UNet.png) |
 
-Although the ![Reference Paper](https://arxiv.org/pdf/1802.10508v1) originally employed multiclass Dice loss, this implementated uses a hybrid Dice-Cross Entropy loss (DiceCELoss) with class weighting and optional lable smoothing. This approach provided more stable gradient flow, improved convergence speed, and yielded higher Dice similarity coefficients across all classes during evaluation. 
+Although the [reference paper](https://arxiv.org/abs/1802.10508v1) originally employed multiclass Dice loss, this implementated uses a hybrid Dice-Cross Entropy loss (DiceCELoss) with class weighting and optional lable smoothing. This approach provided more stable gradient flow, improved convergence speed, and yielded higher Dice similarity coefficients across all classes during evaluation. 
 
 ### Downsampling Path (Encoder)
 The downsampling path is composed of five levels, each progressively halving the spatial resolution and doubling the number of feature maps (from 16 to 256). Each level consists of a DownBlock which includes:
@@ -70,7 +70,7 @@ The final segmentation map is generated through a 1x1x1 convolution followed by 
 
 
 ## Dataset
-For this project, the 3D Improved UNet model was trained and evaluated on the ![3D Prostate MRI dataset](https://data.csiro.au/collection/csiro:51392v2?redirected=true), which contains male pelvis MRI data from 38 patients and 211 volumetric MRI scans.
+For this project, the 3D Improved UNet model was trained and evaluated on the [3D Prostate MRI dataset](https://data.csiro.au/collection/csiro:51392v2?redirected=true), which contains male pelvis MRI data from 38 patients and 211 volumetric MRI scans.
 
 Each image was manually segmented by an expert MR physicist into six anatomical classes - background, body, bone, bladder, rectum and prostate - making it suitable for multiclass volumetric segmentation.
 
